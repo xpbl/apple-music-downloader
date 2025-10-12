@@ -30,3 +30,6 @@ go.work.sum
 
 # why was this not gitignored in the first place
 config.yaml
+
+rootfs/
+rootfs/*
