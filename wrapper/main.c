@@ -6,30 +6,65 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/stat.h>
+#include <termios.h>
+#include <getopt.h>
+#include "cmdline.h"
+static struct gengetopt_args_info args_info;
+char *amUsername, *amPassword;
+char *fairplayCert;
+struct shared_ptr apInf;
+uint8_t leaseMgr[16];
+#include "subhook/subhook.h"
+extern void initialize_subhook();
 
 #include "import.h"
-#include "cmdline.h"
-#ifndef MyRelease
-#include "subhook/subhook.c"
-#endif
 
-static struct shared_ptr apInf;
-static uint8_t leaseMgr[16];
-struct gengetopt_args_info args_info;
-char *amUsername, *amPassword;
+int file_exists(char *filename)
+{
+    struct stat buffer;
+    return (stat(filename, &buffer) == 0);
+}
 
-int file_exists(char *filename) {
-  struct stat buffer;   
-  return (stat (filename, &buffer) == 0);
+char *read_file_to_string(const char *filename)
+{
+    FILE *file = fopen(filename, "rb");
+    if (file == NULL)
+    {
+        fprintf(stderr, "Cannot open file %s\n", filename);
+        return NULL;
+    }
+
+    fseek(file, 0, SEEK_END);
+    long length = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    char *buffer = (char *)malloc(length + 1);
+    if (buffer == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed\n");
+        fclose(file);
+        return NULL;
+    }
+
+    if (fread(buffer, 1, length, file) != length)
+    {
+        fprintf(stderr, "Error reading file %s\n", filename);
+        free(buffer);
+        fclose(file);
+        return NULL;
+    }
+
+    buffer[length] = '\0';
+    fclose(file);
+    return buffer;
 }
 
 static void dialogHandler(long j, struct shared_ptr *protoDialogPtr,
-                          struct shared_ptr *respHandler) {
+                          struct shared_ptr *respHandler)
+{
     const char *const title = std_string_data(
         _ZNK17storeservicescore14ProtocolDialog5titleEv(protoDialogPtr->obj));
     fprintf(stderr, "[.] dialogHandler: {title: %s, message: %s}\n", title,
@@ -46,19 +81,25 @@ static void dialogHandler(long j, struct shared_ptr *protoDialogPtr,
 
     struct std_vector *butVec =
         _ZNK17storeservicescore14ProtocolDialog7buttonsEv(protoDialogPtr->obj);
-    if (strcmp("Sign In", title) == 0) {
-        for (struct shared_ptr *b = butVec->begin; b != butVec->end; ++b) {
+    if (strcmp("Sign In", title) == 0)
+    {
+        for (struct shared_ptr *b = butVec->begin; b != butVec->end; ++b)
+        {
             if (strcmp("Use Existing Apple ID",
                        std_string_data(
                            _ZNK17storeservicescore14ProtocolButton5titleEv(
-                               b->obj))) == 0) {
+                               b->obj))) == 0)
+            {
                 _ZN17storeservicescore22ProtocolDialogResponse17setSelectedButtonERKNSt6__ndk110shared_ptrINS_14ProtocolButtonEEE(
                     diagResp.obj, b);
                 break;
             }
         }
-    } else {
-        for (struct shared_ptr *b = butVec->begin; b != butVec->end; ++b) {
+    }
+    else
+    {
+        for (struct shared_ptr *b = butVec->begin; b != butVec->end; ++b)
+        {
             fprintf(
                 stderr, "[.] button %p: %s\n", b->obj,
                 std_string_data(
@@ -70,7 +111,8 @@ static void dialogHandler(long j, struct shared_ptr *protoDialogPtr,
 }
 
 static void credentialHandler(struct shared_ptr *credReqHandler,
-                              struct shared_ptr *credRespHandler) {
+                              struct shared_ptr *credRespHandler)
+{
     const uint8_t need2FA =
         _ZNK17storeservicescore18CredentialsRequest28requiresHSA2VerificationCodeEv(
             credReqHandler->obj);
@@ -84,30 +126,38 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
 
     int passLen = strlen(amPassword);
 
-    if (need2FA) {
-        if (args_info.code_from_file_flag) {
+    if (need2FA)
+    {
+        if (args_info.code_from_file_flag)
+        {
             fprintf(stderr, "[!] Enter your 2FA code into rootfs/data/code.txt\n");
             fprintf(stderr, "[!] Example command: echo -n 114514 > rootfs/data/2fa.txt\n");
             fprintf(stderr, "[!] Waiting for input...\n");
             int count = 0;
             while (1)
             {
-                if (count >= 20) {
+                if (count >= 20)
+                {
                     fprintf(stderr, "[!] Failed to get 2FA Code in 60s. Exiting...\n");
                     exit(0);
                 }
-                if (file_exists("/data/2fa.txt")) {
+                if (file_exists("/data/2fa.txt"))
+                {
                     FILE *fp = fopen("/data/2fa.txt", "r");
                     fscanf(fp, "%6s", amPassword + passLen);
                     remove("/data/2fa.txt");
                     fprintf(stderr, "[!] Code file detected! Logging in...\n");
                     break;
-                } else {
+                }
+                else
+                {
                     sleep(3);
                     count++;
                 }
             }
-        } else {
+        }
+        else
+        {
             printf("2FA code: ");
             scanf("%6s", amPassword + passLen);
         }
@@ -140,13 +190,15 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
 static uint8_t allDebug() { return 1; }
 #endif
 
-static inline void init() {
+static inline void init()
+{
     // srand(time(0));
 
     // raise(SIGSTOP);
     fprintf(stderr, "[+] starting...\n");
     setenv("ANDROID_DNS_MODE", "local", 1);
-    if (args_info.proxy_given) {
+    if (args_info.proxy_given)
+    {
         fprintf(stderr, "[+] Using proxy %s", args_info.proxy_arg);
         setenv("http_proxy", args_info.proxy_arg, 1);
         setenv("https_proxy", args_info.proxy_arg, 1);
@@ -155,9 +207,10 @@ static inline void init() {
     static const char *resolvers[2] = {"1.1.1.1", "1.0.0.1"};
     _resolv_set_nameservers_for_net(0, resolvers, 2, ".");
 #ifndef MyRelease
-    subhook_install(subhook_new(
-        _ZN13mediaplatform26DebugLogEnabledForPriorityENS_11LogPriorityE,
-        allDebug, SUBHOOK_64BIT_OFFSET));
+    initialize_subhook();
+    // subhook_install(subhook_new(
+    //     _ZN13mediaplatform26DebugLogEnabledForPriorityENS_11LogPriorityE,
+    //     allDebug, SUBHOOK_64BIT_OFFSET));
 #endif
 
     // static char android_id[16];
@@ -186,7 +239,8 @@ static inline void init() {
         &ret, GUID.obj, &conf1, &conf2, &conf3, &conf4);
 }
 
-static inline struct shared_ptr init_ctx() {
+static inline struct shared_ptr init_ctx()
+{
     fprintf(stderr, "[+] initializing ctx...\n");
     union std_string strBuf =
         new_std_string("/data/data/com.apple.android.music/files/mpl_db");
@@ -202,7 +256,7 @@ static inline struct shared_ptr init_ctx() {
     struct shared_ptr reqCtxCfg = {.obj = ptr + 32, .ctrl_blk = ptr};
 
     _ZN17storeservicescore20RequestContextConfigC2Ev(reqCtxCfg.obj);
-	// _ZN17storeservicescore20RequestContextConfig9setCPFlagEb(reqCtx.obj, 1);
+    // _ZN17storeservicescore20RequestContextConfig9setCPFlagEb(reqCtx.obj, 1);
     _ZN17storeservicescore20RequestContextConfig20setBaseDirectoryPathERKNSt6__ndk112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE(
         reqCtxCfg.obj, &strBuf);
     strBuf = new_std_string("Music");
@@ -255,8 +309,17 @@ static inline struct shared_ptr init_ctx() {
 
 extern void *endLeaseCallback;
 extern void *pbErrCallback;
+static void endLeaseCb(const int c)
+{
+    fprintf(stderr, "[.] end lease code %d\n", c);
+}
 
-inline static uint8_t login(struct shared_ptr reqCtx) {
+static void pbErrCb(void *err)
+{
+    fprintf(stderr, "[.] playback error\n");
+}
+inline static uint8_t login(struct shared_ptr reqCtx)
+{
     fprintf(stderr, "[+] logging in...\n");
     struct shared_ptr flow;
     _ZNSt6__ndk110shared_ptrIN17storeservicescore16AuthenticateFlowEE11make_sharedIJRNS0_INS1_14RequestContextEEEEEES3_DpOT_(
@@ -281,9 +344,11 @@ inline static uint8_t login(struct shared_ptr reqCtx) {
 }
 
 static inline uint8_t readfull(const int connfd, void *const buf,
-                               const size_t size) {
+                               const size_t size)
+{
     size_t red = 0;
-    while (size > red) {
+    while (size > red)
+    {
         const ssize_t b = read(connfd, ((uint8_t *)buf) + red, size - red);
         if (b <= 0)
             return 0;
@@ -293,11 +358,14 @@ static inline uint8_t readfull(const int connfd, void *const buf,
 }
 
 static inline void writefull(const int connfd, void *const buf,
-                             const size_t size) {
+                             const size_t size)
+{
     size_t red = 0;
-    while (size > red) {
+    while (size > red)
+    {
         const ssize_t b = write(connfd, ((uint8_t *)buf) + red, size - red);
-        if (b <= 0) {
+        if (b <= 0)
+        {
             perror("write");
             break;
         }
@@ -309,9 +377,11 @@ static void *FHinstance = NULL;
 static void *preshareCtx = NULL;
 
 inline static void *getKdContext(const char *const adam,
-                                 const char *const uri) {
+                                 const char *const uri)
+{
     uint8_t isPreshare = (strcmp("0", adam) == 0);
-    if (isPreshare && preshareCtx != NULL) {
+    if (isPreshare && preshareCtx != NULL)
+    {
         return preshareCtx;
     }
     fprintf(stderr, "[.] adamId: %s, uri: %s\n", adam, uri);
@@ -348,8 +418,10 @@ inline static void *getKdContext(const char *const adam,
     return kdContext;
 }
 
-void handle(const int connfd) {
-    while (1) {
+void handle(const int connfd)
+{
+    while (1)
+    {
         uint8_t adamSize;
         if (!readfull(connfd, &adamSize, sizeof(uint8_t)))
             return;
@@ -374,9 +446,11 @@ void handle(const int connfd) {
         if (kdContext == NULL)
             return;
 
-        while (1) {
+        while (1)
+        {
             uint32_t size;
-            if (!readfull(connfd, &size, sizeof(uint32_t))) {
+            if (!readfull(connfd, &size, sizeof(uint32_t)))
+            {
                 perror("read");
                 return;
             }
@@ -385,11 +459,13 @@ void handle(const int connfd) {
                 break;
 
             void *sample = malloc(size);
-            if (sample == NULL) {
+            if (sample == NULL)
+            {
                 perror("malloc");
                 return;
             }
-            if (!readfull(connfd, sample, size)) {
+            if (!readfull(connfd, sample, size))
+            {
                 free(sample);
                 perror("read");
                 return;
@@ -404,133 +480,153 @@ void handle(const int connfd) {
 
 extern uint8_t handle_cpp(int);
 
-inline static int new_socket() {
-    const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
-    if (fd == -1) {
+extern uint8_t handle_cpp(int);
+
+inline static int new_socket()
+{
+    const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd == -1)
+    {
         perror("socket");
         return EXIT_FAILURE;
     }
-    const int optval = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
 
-    static struct sockaddr_in serv_addr = {.sin_family = AF_INET};
-    inet_pton(AF_INET, args_info.host_arg, &serv_addr.sin_addr);
-    serv_addr.sin_port = htons(args_info.decrypt_port_arg);
-    if (bind(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1) {
+    static struct sockaddr_un serv_addr = {.sun_family = AF_UNIX};
+    strncpy(serv_addr.sun_path, "/proc/decrypt.sock", sizeof(serv_addr.sun_path) - 1);
+    if (bind(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1)
+    {
         perror("bind");
         return EXIT_FAILURE;
     }
 
-    if (listen(fd, 5) == -1) {
+    if (listen(fd, 5) == -1)
+    {
         perror("listen");
         return EXIT_FAILURE;
     }
 
-    fprintf(stderr, "[!] listening %s:%d\n", args_info.host_arg, args_info.decrypt_port_arg);
+    fprintf(stderr, "[!] listening on Unix socket /proc/decrypt.sock\n");
     // close(STDOUT_FILENO);
 
-    static struct sockaddr_in peer_addr;
+    static struct sockaddr_un peer_addr;
     static socklen_t peer_addr_size = sizeof(peer_addr);
-    while (1) {
+    while (1)
+    {
         const int connfd = accept4(fd, (struct sockaddr *)&peer_addr,
                                    &peer_addr_size, SOCK_CLOEXEC);
-        if (connfd == -1) {
-            if (errno == ENETDOWN || errno == EPROTO || errno == ENOPROTOOPT ||
-                errno == EHOSTDOWN || errno == ENONET ||
-                errno == EHOSTUNREACH || errno == EOPNOTSUPP ||
-                errno == ENETUNREACH)
-                continue;
+        if (connfd == -1)
+        {
             perror("accept4");
             return EXIT_FAILURE;
         }
 
-        if (!handle_cpp(connfd)) {
-            uint8_t autom = 1;
-            _ZN22SVPlaybackLeaseManager12requestLeaseERKb(leaseMgr, &autom);
-        }
+        // if (!handle_cpp(connfd))
+        //{
+        //     uint8_t autom = 1;
+        //     _ZN22SVPlaybackLeaseManager12requestLeaseERKb(leaseMgr, &autom);
+        // }
+        handle(connfd);
         // if (sigsetjmp(catcher.env, 0) == 0) {
         //     catcher.do_jump = 1;
         //     handle(connfd);
         // }
         // catcher.do_jump = 0;
 
-        if (close(connfd) == -1) {
+        if (close(connfd) == -1)
+        {
             perror("close");
             return EXIT_FAILURE;
         }
     }
 }
 
-
-const char* get_m3u8_method_play(uint8_t leaseMgr[16], unsigned long adam) {
+const char *get_m3u8_method_play(uint8_t leaseMgr[16], unsigned long adam)
+{
     union std_string HLS = new_std_string_short_mode("HLS");
     struct std_vector HLSParam = new_std_vector(&HLS);
     static uint8_t z0 = 0;
     struct shared_ptr ptr_result;
     _ZN22SVPlaybackLeaseManager12requestAssetERKmRKNSt6__ndk16vectorINS2_12basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEENS7_IS9_EEEERKb(
-        &ptr_result, leaseMgr, &adam, &HLSParam, &z0
-    );
-    
-    if (ptr_result.obj == NULL) {
+        &ptr_result, leaseMgr, &adam, &HLSParam, &z0);
+
+    if (ptr_result.obj == NULL)
+    {
         return NULL;
     }
 
-    if (_ZNK23SVPlaybackAssetResponse13hasValidAssetEv(ptr_result.obj)) {
+    if (_ZNK23SVPlaybackAssetResponse13hasValidAssetEv(ptr_result.obj))
+    {
         struct shared_ptr *playbackAsset = _ZNK23SVPlaybackAssetResponse13playbackAssetEv(ptr_result.obj);
-        if (playbackAsset == NULL || playbackAsset->obj == NULL) {
+        if (playbackAsset == NULL || playbackAsset->obj == NULL)
+        {
             return NULL;
         }
 
         union std_string *m3u8 = malloc(sizeof(union std_string));
-        if (m3u8 == NULL) {
+        if (m3u8 == NULL)
+        {
             return NULL;
         }
 
         void *playbackObj = playbackAsset->obj;
         _ZNK17storeservicescore13PlaybackAsset9URLStringEv(m3u8, playbackObj);
 
-        if (m3u8 == NULL || std_string_data(m3u8) == NULL) {
+        if (m3u8 == NULL || std_string_data(m3u8) == NULL)
+        {
             free(m3u8);
             return NULL;
         }
-        
+
         const char *m3u8_str = std_string_data(m3u8);
-        if (m3u8_str) {
-            char *result = strdup(m3u8_str);  // Make a copy
+        if (m3u8_str)
+        {
+            char *result = strdup(m3u8_str); // Make a copy
             free(m3u8);
             return result;
-        } else {
+        }
+        else
+        {
             return NULL;
         }
-    } else {
+    }
+    else
+    {
         return NULL;
     }
 }
 
-void handle_m3u8(const int connfd) {
+void handle_m3u8(const int connfd)
+{
     while (1)
     {
         uint8_t adamSize;
-        if (!readfull(connfd, &adamSize, sizeof(uint8_t))) {
+        if (!readfull(connfd, &adamSize, sizeof(uint8_t)))
+        {
             return;
         }
-        if (adamSize <= 0) {
+        if (adamSize <= 0)
+        {
             return;
         }
         char adam[adamSize];
-        for (int i=0; i<adamSize; i=i+1) {
+        for (int i = 0; i < adamSize; i = i + 1)
+        {
             readfull(connfd, &adam[i], sizeof(uint8_t));
         }
         char *ptr;
         unsigned long adamID = strtoul(adam, &ptr, 10);
         const char *m3u8 = get_m3u8_method_play(leaseMgr, adamID);
-        if (m3u8 == NULL) {
+        if (m3u8 == NULL)
+        {
             fprintf(stderr, "[.] failed to get m3u8 of adamId: %ld\n", adamID);
             writefull(connfd, "\n", sizeof("\n"));
-        } else {
+        }
+        else
+        {
             fprintf(stderr, "[.] m3u8 adamId: %ld, url: %s\n", adamID, m3u8);
             char *with_newline = malloc(strlen(m3u8) + 2);
-            if (with_newline) {
+            if (with_newline)
+            {
                 strcpy(with_newline, m3u8);
                 strcat(with_newline, "\n");
                 writefull(connfd, with_newline, strlen(with_newline));
@@ -541,66 +637,92 @@ void handle_m3u8(const int connfd) {
     }
 }
 
-static inline void *new_socket_m3u8(void *args) {
-    const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
-    if (fd == -1) {
+static inline void *new_socket_m3u8(void *args)
+{
+    const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd == -1)
+    {
         perror("socket");
+        return NULL;
     }
-    const int optval = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
 
-    static struct sockaddr_in serv_addr = {.sin_family = AF_INET};
-    inet_pton(AF_INET, args_info.host_arg, &serv_addr.sin_addr);
-    serv_addr.sin_port = htons(args_info.m3u8_port_arg);
-    if (bind(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1) {
+    static struct sockaddr_un serv_addr = {.sun_family = AF_UNIX};
+    strncpy(serv_addr.sun_path, "/proc/m3u8.sock", sizeof(serv_addr.sun_path) - 1);
+    if (bind(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1)
+    {
         perror("bind");
+        close(fd);
+        return NULL;
     }
 
-    if (listen(fd, 5) == -1) {
+    if (listen(fd, 5) == -1)
+    {
         perror("listen");
+        close(fd);
+        return NULL;
     }
 
-    fprintf(stderr, "[!] listening m3u8 request on %s:%d\n", args_info.host_arg, args_info.m3u8_port_arg);
+    fprintf(stderr, "[!] listening m3u8 request on Unix socket /proc/m3u8.sock\n");
     // close(STDOUT_FILENO);
 
-    static struct sockaddr_in peer_addr;
+    static struct sockaddr_un peer_addr;
     static socklen_t peer_addr_size = sizeof(peer_addr);
-    while (1) {
+    while (1)
+    {
         const int connfd = accept4(fd, (struct sockaddr *)&peer_addr,
                                    &peer_addr_size, SOCK_CLOEXEC);
-        if (connfd == -1) {
-            if (errno == ENETDOWN || errno == EPROTO || errno == ENOPROTOOPT ||
-                errno == EHOSTDOWN || errno == ENONET ||
-                errno == EHOSTUNREACH || errno == EOPNOTSUPP ||
-                errno == ENETUNREACH)
-                continue;
+        if (connfd == -1)
+        {
             perror("accept4");
-            
+            continue;
         }
 
         handle_m3u8(connfd);
 
-        if (close(connfd) == -1) {
+        if (close(connfd) == -1)
+        {
             perror("close");
         }
     }
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
     cmdline_parser(argc, argv, &args_info);
+
+    // Read credentials from stdin (sent by Go application)
+    char username[256], password[256];
+    if (fgets(username, sizeof(username), stdin) == NULL ||
+        fgets(password, sizeof(password), stdin) == NULL)
+    {
+        fprintf(stderr, "[!] Failed to read credentials from stdin\n");
+        return EXIT_FAILURE;
+    }
+
+    // Remove newlines
+    username[strcspn(username, "\n")] = 0;
+    password[strcspn(password, "\n")] = 0;
+
+    amUsername = strdup(username);
+    amPassword = strdup(password);
+
+    fairplayCert = read_file_to_string("./rootfs/data/crypto/fairplay-1.crt");
+    if (fairplayCert == NULL)
+    {
+        fprintf(stderr, "[!] Failed to load fairplay certificate. Exiting...\n");
+        return EXIT_FAILURE;
+    }
 
     init();
     const struct shared_ptr ctx = init_ctx();
-    if (args_info.login_given) {
-        amUsername = strtok(args_info.login_arg, ":");
-        amPassword = strtok(NULL, ":");
-    }
-    if (args_info.login_given && !login(ctx)) {
+
+    if (!login(ctx))
+    {
         fprintf(stderr, "[!] login failed\n");
         return EXIT_FAILURE;
     }
     _ZN22SVPlaybackLeaseManagerC2ERKNSt6__ndk18functionIFvRKiEEERKNS1_IFvRKNS0_10shared_ptrIN17storeservicescore19StoreErrorConditionEEEEEE(
-        leaseMgr, &endLeaseCallback, &pbErrCallback);
+        leaseMgr, &endLeaseCb, &pbErrCb);
     uint8_t autom = 1;
     _ZN22SVPlaybackLeaseManager25refreshLeaseAutomaticallyERKb(leaseMgr,
                                                                &autom);
@@ -610,6 +732,6 @@ int main(int argc, char *argv[]) {
     pthread_t m3u8_thread;
     pthread_create(&m3u8_thread, NULL, &new_socket_m3u8, NULL);
     pthread_detach(m3u8_thread);
-    
+
     return new_socket();
 }

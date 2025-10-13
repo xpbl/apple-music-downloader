@@ -1,0 +1,3 @@
+[submodule "wrapper/subhook"]
+	path = wrapper/subhook
+	url = https://github.com/wyrover/subhook.git

@@ -42,26 +42,17 @@ struct gengetopt_args_info
   char * host_arg;	/**< @brief  (default='127.0.0.1').  */
   char * host_orig;	/**< @brief  original value given at command line.  */
   const char *host_help; /**< @brief  help description.  */
-  int decrypt_port_arg;	/**< @brief  (default='10020').  */
-  char * decrypt_port_orig;	/**< @brief  original value given at command line.  */
-  const char *decrypt_port_help; /**< @brief  help description.  */
-  int m3u8_port_arg;	/**< @brief  (default='20020').  */
-  char * m3u8_port_orig;	/**< @brief  original value given at command line.  */
-  const char *m3u8_port_help; /**< @brief  help description.  */
   char * proxy_arg;	/**< @brief  (default='').  */
   char * proxy_orig;	/**< @brief  original value given at command line.  */
   const char *proxy_help; /**< @brief  help description.  */
-  char * login_arg;	/**< @brief username:password.  */
-  char * login_orig;	/**< @brief username:password original value given at command line.  */
-  const char *login_help; /**< @brief username:password help description.  */
+  int login_flag;	/**< @brief  (default=off).  */
+  const char *login_help; /**< @brief  help description.  */
   int code_from_file_flag;	/**< @brief  (default=off).  */
   const char *code_from_file_help; /**< @brief  help description.  */
   
   unsigned int help_given ;	/**< @brief Whether help was given.  */
   unsigned int version_given ;	/**< @brief Whether version was given.  */
   unsigned int host_given ;	/**< @brief Whether host was given.  */
-  unsigned int decrypt_port_given ;	/**< @brief Whether decrypt-port was given.  */
-  unsigned int m3u8_port_given ;	/**< @brief Whether m3u8-port was given.  */
   unsigned int proxy_given ;	/**< @brief Whether proxy was given.  */
   unsigned int login_given ;	/**< @brief Whether login was given.  */
   unsigned int code_from_file_given ;	/**< @brief Whether code-from-file was given.  */

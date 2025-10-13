@@ -1,29 +1,39 @@
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+
 #pragma once
 
-struct shared_ptr {
+struct shared_ptr
+{
 	void *obj;
 	void *ctrl_blk;
 };
 
-union std_string {
-	struct {
+union std_string
+{
+	struct
+	{
 		uint8_t mark;
 		char str[0];
 	};
-	struct {
+	struct
+	{
 		size_t cap;
 		size_t size;
 		const char *data;
 	};
 };
 
-struct std_vector {
+struct std_vector
+{
 	void *begin;
 	void *end;
 	void *end_capacity;
 };
 
-static inline union std_string new_std_string(const char *s) {
+static inline union std_string new_std_string(const char *s)
+{
 	union std_string str = {
 		.cap = 1,
 		.size = strlen(s),
@@ -32,26 +42,30 @@ static inline union std_string new_std_string(const char *s) {
 	return str;
 }
 
-static inline struct std_vector new_std_vector(void *begin) {
-    struct std_vector vector = {
-        .begin = begin,
-        .end = begin + 1,
-    };
-    vector.end_capacity = vector.end;
-    return vector;
+static inline struct std_vector new_std_vector(void *begin)
+{
+	struct std_vector vector = {
+		.begin = begin,
+		.end = begin + 1,
+	};
+	vector.end_capacity = vector.end;
+	return vector;
 }
 
-static inline union std_string new_std_string_short_mode(const char *str) {
-    short str_size = strlen(str);
-    union std_string std_str = {
-        .mark = str_size << 1,
-    };
-    strcpy(std_str.str, str);
-    return std_str;
+static inline union std_string new_std_string_short_mode(const char *str)
+{
+	short str_size = strlen(str);
+	union std_string std_str = {
+		.mark = str_size << 1,
+	};
+	strcpy(std_str.str, str);
+	return std_str;
 }
 
-static inline const char *std_string_data(union std_string *str) {
-	if ((str->mark & 1) == 0) {
+static inline const char *std_string_data(union std_string *str)
+{
+	if ((str->mark & 1) == 0)
+	{
 		return str->str;
 	}
 	return str->data;
@@ -234,11 +248,10 @@ extern void _ZN21RequestContextManager9configureERKNSt6__ndk110shared_ptrIN17sto
 	struct shared_ptr *);
 
 extern struct shared_ptr *_ZN22SVPlaybackLeaseManager12requestAssetERKmRKNSt6__ndk16vectorINS2_12basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEENS7_IS9_EEEERKb(
-	void *, void *, unsigned long *, struct std_vector *, uint8_t *
-);
+	void *, void *, unsigned long *, struct std_vector *, uint8_t *);
 extern int _ZNK23SVPlaybackAssetResponse13hasValidAssetEv(void *);
 extern struct shared_ptr *_ZNK23SVPlaybackAssetResponse13playbackAssetEv(void *);
 extern union std_string *_ZNK17storeservicescore13PlaybackAsset9URLStringEv(void *, uint8_t *);
 
 const char *const android_id = "dc28071e981c439e";
-const char *const fairplayCert = /* fairplay-1.crt */
+// const char *const fairplayCert = /* fairplay-1.crt */;

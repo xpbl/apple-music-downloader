@@ -1,0 +1,7 @@
+package "wrapper"
+version "1.2.0"
+
+option "host" H "" string optional default="127.0.0.1"
+option "proxy" P "" string optional default=""
+option "login" L "" flag off
+option "code-from-file" F "" flag off

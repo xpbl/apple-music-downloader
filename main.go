@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"syscall"
+
 	"sort"
 	"strconv"
 	"strings"
@@ -32,7 +34,9 @@ import (
 	"github.com/grafov/m3u8"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/pflag"
+	"github.com/zalando/go-keyring"
 	"github.com/zhaarey/go-mp4tag"
+	"golang.org/x/term"
 	"gopkg.in/yaml.v2"
 )
 
@@ -67,6 +71,63 @@ func loadConfig() error {
 		Config.Storefront = "us"
 	}
 	return nil
+}
+
+// getCredentials securely gets Apple Music credentials
+func getCredentials() (username, password string, err error) {
+	service := "apple-music-downloader"
+	user := "credentials"
+
+	// Try to get from keyring first
+	secret, err := keyring.Get(service, user)
+	if err == nil {
+		// Parse the secret (format: "username:password")
+		if len(secret) > 0 {
+			parts := strings.SplitN(secret, ":", 2)
+			if len(parts) == 2 {
+				return parts[0], parts[1], nil
+			}
+		}
+	}
+
+	// Not in keyring, prompt user
+	fmt.Print("Apple Music Username: ")
+	fmt.Scanln(&username)
+
+	fmt.Print("Apple Music Password: ")
+	// Use a simple approach for hidden input
+	password, err = readPassword()
+	if err != nil {
+		return "", "", err
+	}
+
+	// Store in keyring for next time
+	secretString := fmt.Sprintf("%s:%s", username, password)
+	err = keyring.Set(service, user, secretString)
+	if err != nil {
+		fmt.Printf("Warning: Could not store credentials in keyring: %v\n", err)
+	}
+
+	return username, password, nil
+}
+
+// readPassword reads a password from stdin without echoing
+func readPassword() (string, error) {
+	// Check if stdin is a terminal
+	if !term.IsTerminal(int(syscall.Stdin)) {
+		return "", errors.New("stdin is not a terminal")
+	}
+
+	// Read password without echoing
+	password, err := term.ReadPassword(int(syscall.Stdin))
+	if err != nil {
+		return "", err
+	}
+
+	// Add a newline after reading
+	fmt.Println()
+
+	return string(password), nil
 }
 
 func LimitString(s string) string {
@@ -1773,18 +1834,102 @@ func writeMP4Tags(track *task.Track, lrc string) error {
 	return nil
 }
 
+func setupChroot(rootfsPath string) error {
+	if os.Geteuid() == 0 {
+		if err := syscall.Chroot(rootfsPath); err != nil {
+			return fmt.Errorf("chroot failed: %w", err)
+		}
+	} else {
+		if os.Getenv("IN_NAMESPACE") != "1" {
+			self, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("could not find own executable path: %w", err)
+			}
+			args := os.Args
+			cmd := exec.Command(self, args[1:]...)
+			cmd.Env = append(os.Environ(), "IN_NAMESPACE=1")
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			cmd.SysProcAttr = &syscall.SysProcAttr{
+				Cloneflags:  syscall.CLONE_NEWUSER,
+				UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+				GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+			}
+
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("namespace command failed: %w", err)
+			}
+			// The parent process must exit after the child is done.
+			os.Exit(0)
+		}
+
+		fmt.Println("Inside namespace, attempting chroot.")
+		if err := syscall.Chroot(rootfsPath); err != nil {
+			return fmt.Errorf("chroot failed inside namespace: %w", err)
+		}
+	}
+
+	if err := os.Chdir("/"); err != nil {
+		return fmt.Errorf("chdir to / failed: %w", err)
+	}
+
+	return nil
+}
+
+func runAmWrapper(username, password string) (func(), error) {
+	// After chroot, the path is absolute from the new root.
+	wrapperPath := "/amwrapper"
+
+	wrapperCmd := exec.Command(wrapperPath)
+	wrapperCmd.Stdin = strings.NewReader(fmt.Sprintf("%s\n%s\n", username, password))
+	wrapperCmd.Stdout = os.Stdout
+	wrapperCmd.Stderr = os.Stderr
+
+	if err := wrapperCmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start amwrapper: %w", err)
+	}
+	cleanup := func() {
+		if wrapperCmd.Process != nil {
+			wrapperCmd.Process.Kill()
+		}
+	}
+	return cleanup, nil
+}
+
 func main() {
 	err := loadConfig()
 	if err != nil {
 		fmt.Printf("load Config failed: %v", err)
 		return
 	}
+
+	username, password, err := getCredentials()
+	if err != nil {
+		fmt.Printf("Failed to get credentials: %v\n", err)
+		return
+	}
+	rootfs, err := filepath.Abs("rootfs")
+	if err != nil {
+		log.Fatalf("Could not get absolute path for rootfs: %v", err)
+	}
+	if err := setupChroot(rootfs); err != nil {
+		log.Fatalf("Failed to set up chroot environment: %v", err)
+	}
+	cleanup, err := runAmWrapper(username, password)
+	if err != nil {
+		log.Fatalf("Failed to run amwrapper: %v", err)
+	}
+	defer cleanup()
+	time.Sleep(2 * time.Second)
+
 	token, err := ampapi.GetToken()
 	if err != nil {
 		if Config.AuthorizationToken != "" && Config.AuthorizationToken != "your-authorization-token" {
 			token = strings.Replace(Config.AuthorizationToken, "Bearer ", "", -1)
 		} else {
 			fmt.Println("Failed to get token.")
+			fmt.Println(err)
 			return
 		}
 	}
@@ -2168,7 +2313,7 @@ func checkM3u8(b string, f string) (string, error) {
 	var EnhancedHls string
 	if Config.GetM3u8FromDevice {
 		adamID := b
-		conn, err := net.Dial("tcp", Config.GetM3u8Port)
+		conn, err := net.Dial("unix", "./rootfs/proc/m3u8.sock")
 		if err != nil {
 			fmt.Println("Error connecting to device:", err)
 			return "none", err
