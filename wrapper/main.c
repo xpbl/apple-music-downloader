@@ -477,7 +477,7 @@ void handle(const int connfd)
         }
     }
 }
-static int wait_for_credentials(char *username, char *password)
+static int wait_for_credentials(char *username, size_t username_max_len, char *password, size_t password_max_len)
 {
     unlink("/socks/decrypt.sock");
     const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -495,7 +495,7 @@ static int wait_for_credentials(char *username, char *password)
         close(fd);
         return 0;
     }
-    chmod("/socks/decrypt.sock", 0777);
+
     if (listen(fd, 5) == -1)
     {
         perror("listen");
@@ -513,7 +513,7 @@ static int wait_for_credentials(char *username, char *password)
     }
     int username_pos = 0;
     char byte;
-    while (username_pos < sizeof(username) - 1)
+    while (username_pos < username_max_len - 1)
     {
         if (read(connfd, &byte, 1) != 1)
         {
@@ -528,7 +528,7 @@ static int wait_for_credentials(char *username, char *password)
     }
     username[username_pos] = '\0';
     int password_pos = 0;
-    while (password_pos < sizeof(password) - 1)
+    while (password_pos < password_max_len - 1)
     {
         if (read(connfd, &byte, 1) != 1)
         {
@@ -765,7 +765,7 @@ int main(int argc, char *argv[])
     cmdline_parser(argc, argv, &args_info);
     fprintf(stderr, "[+] waiting for credentials\n");
     char username[256], password[256];
-    if (!wait_for_credentials(username, password))
+    if (!wait_for_credentials(username, sizeof(username), password, sizeof(password)))
     {
         fprintf(stderr, "[!] failed to receive credentials\n");
         return EXIT_FAILURE;
