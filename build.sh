@@ -1,4 +1,8 @@
+docker rm --force amwrapper
+set -e
 bash -c "cd wrapper && cmake . && make"
-mv wrapper/bin/amwrapper bin/amwrapper 2>/dev/null
+rm -f bin/rootfs/amwrapper
+mv bin/amwrapper bin/rootfs/amwrapper
 go build -o bin/amdownloader -buildvcs=false
-cd bin
+cp Dockerfile ./bin
+bash -c "cd bin && docker build --no-cache -t amwrapper -f Dockerfile ."

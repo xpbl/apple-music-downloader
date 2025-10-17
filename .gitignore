@@ -38,3 +38,4 @@ CMakeFiles
 tmp/*
 tmp/
 bin/
+*.sock

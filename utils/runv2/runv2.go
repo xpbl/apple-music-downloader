@@ -153,7 +153,7 @@ func Run(adamId string, playlistUrl string, outfile string, Config structs.Confi
 	// connect to decryptor
 	//addr := fmt.Sprintf("127.0.0.1:10020")
 	//addr := Config.DecryptM3u8Port
-	conn, err := net.Dial("unix", "./rootfs/proc/decrypt.sock")
+	conn, err := net.Dial("unix", "/socks/decrypt.sock")
 	if err != nil {
 		return err
 	}

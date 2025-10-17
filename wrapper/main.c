@@ -477,6 +477,78 @@ void handle(const int connfd)
         }
     }
 }
+static int wait_for_credentials(char *username, char *password)
+{
+    unlink("/socks/decrypt.sock");
+    const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd == -1)
+    {
+        perror("socket");
+        return 0;
+    }
+
+    static struct sockaddr_un serv_addr = {.sun_family = AF_UNIX};
+    strncpy(serv_addr.sun_path, "/socks/decrypt.sock", sizeof(serv_addr.sun_path) - 1);
+    if (bind(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1)
+    {
+        perror("bind");
+        close(fd);
+        return 0;
+    }
+    chmod("/socks/decrypt.sock", 0777);
+    if (listen(fd, 5) == -1)
+    {
+        perror("listen");
+        close(fd);
+        return 0;
+    }
+    static struct sockaddr_un peer_addr;
+    static socklen_t peer_addr_size = sizeof(peer_addr);
+    const int connfd = accept4(fd, (struct sockaddr *)&peer_addr, &peer_addr_size, SOCK_CLOEXEC);
+    if (connfd == -1)
+    {
+        perror("accept4");
+        close(fd);
+        return 0;
+    }
+    int username_pos = 0;
+    char byte;
+    while (username_pos < sizeof(username) - 1)
+    {
+        if (read(connfd, &byte, 1) != 1)
+        {
+            perror("read username");
+            close(connfd);
+            close(fd);
+            return 0;
+        }
+        if (byte == '\0')
+            break;
+        username[username_pos++] = byte;
+    }
+    username[username_pos] = '\0';
+    int password_pos = 0;
+    while (password_pos < sizeof(password) - 1)
+    {
+        if (read(connfd, &byte, 1) != 1)
+        {
+            perror("read password");
+            close(connfd);
+            close(fd);
+            return 0;
+        }
+        if (byte == '\0')
+            break;
+        password[password_pos++] = byte;
+    }
+    password[password_pos] = '\0';
+
+    close(connfd);
+    close(fd);
+
+    fprintf(stderr, "[+] received credentials\n");
+    return 1;
+}
 
 extern uint8_t handle_cpp(int);
 
@@ -484,6 +556,7 @@ extern uint8_t handle_cpp(int);
 
 inline static int new_socket()
 {
+    unlink("/socks/decrypt.sock");
     const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd == -1)
     {
@@ -492,20 +565,20 @@ inline static int new_socket()
     }
 
     static struct sockaddr_un serv_addr = {.sun_family = AF_UNIX};
-    strncpy(serv_addr.sun_path, "/proc/decrypt.sock", sizeof(serv_addr.sun_path) - 1);
+    strncpy(serv_addr.sun_path, "/socks/decrypt.sock", sizeof(serv_addr.sun_path) - 1);
     if (bind(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1)
     {
         perror("bind");
         return EXIT_FAILURE;
     }
-
+    chmod("/socks/decrypt.sock", 0777);
     if (listen(fd, 5) == -1)
     {
         perror("listen");
         return EXIT_FAILURE;
     }
 
-    fprintf(stderr, "[!] listening on Unix socket /proc/decrypt.sock\n");
+    fprintf(stderr, "[!] listening on Unix socket /socks/decrypt.sock\n");
     // close(STDOUT_FILENO);
 
     static struct sockaddr_un peer_addr;
@@ -639,6 +712,7 @@ void handle_m3u8(const int connfd)
 
 static inline void *new_socket_m3u8(void *args)
 {
+    unlink("/socks/m3u8.sock");
     const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd == -1)
     {
@@ -647,14 +721,14 @@ static inline void *new_socket_m3u8(void *args)
     }
 
     static struct sockaddr_un serv_addr = {.sun_family = AF_UNIX};
-    strncpy(serv_addr.sun_path, "/proc/m3u8.sock", sizeof(serv_addr.sun_path) - 1);
+    strncpy(serv_addr.sun_path, "/socks/m3u8.sock", sizeof(serv_addr.sun_path) - 1);
     if (bind(fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1)
     {
         perror("bind");
         close(fd);
         return NULL;
     }
-
+    chmod("/socks/m3u8.sock", 0777);
     if (listen(fd, 5) == -1)
     {
         perror("listen");
@@ -662,7 +736,7 @@ static inline void *new_socket_m3u8(void *args)
         return NULL;
     }
 
-    fprintf(stderr, "[!] listening m3u8 request on Unix socket /proc/m3u8.sock\n");
+    fprintf(stderr, "[!] listening m3u8 request on Unix socket /socks/m3u8.sock\n");
     // close(STDOUT_FILENO);
 
     static struct sockaddr_un peer_addr;
@@ -689,27 +763,21 @@ static inline void *new_socket_m3u8(void *args)
 int main(int argc, char *argv[])
 {
     cmdline_parser(argc, argv, &args_info);
-
-    // Read credentials from stdin (sent by Go application)
+    fprintf(stderr, "[+] waiting for credentials\n");
     char username[256], password[256];
-    if (fgets(username, sizeof(username), stdin) == NULL ||
-        fgets(password, sizeof(password), stdin) == NULL)
+    if (!wait_for_credentials(username, password))
     {
-        fprintf(stderr, "[!] Failed to read credentials from stdin\n");
+        fprintf(stderr, "[!] failed to receive credentials\n");
         return EXIT_FAILURE;
     }
-
-    // Remove newlines
-    username[strcspn(username, "\n")] = 0;
-    password[strcspn(password, "\n")] = 0;
 
     amUsername = strdup(username);
     amPassword = strdup(password);
 
-    fairplayCert = read_file_to_string("./rootfs/data/crypto/fairplay-1.crt");
+    fairplayCert = read_file_to_string("/data/crypto/fairplay-1.crt");
     if (fairplayCert == NULL)
     {
-        fprintf(stderr, "[!] Failed to load fairplay certificate. Exiting...\n");
+        fprintf(stderr, "[!] failed to load fairplay certificate\n");
         return EXIT_FAILURE;
     }
 

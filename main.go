@@ -48,6 +48,7 @@ var (
 	dl_song        bool
 	artist_select  bool
 	debug_mode     bool
+	force_reauth   bool
 	alac_max       *int
 	atmos_max      *int
 	mv_max         *int
@@ -77,31 +78,27 @@ func loadConfig() error {
 func getCredentials() (username, password string, err error) {
 	service := "apple-music-downloader"
 	user := "credentials"
-
-	// Try to get from keyring first
-	secret, err := keyring.Get(service, user)
-	if err == nil {
-		// Parse the secret (format: "username:password")
-		if len(secret) > 0 {
-			parts := strings.SplitN(secret, ":", 2)
-			if len(parts) == 2 {
-				return parts[0], parts[1], nil
+	if force_reauth {
+		keyring.Delete(service, user)
+	} else {
+		secret, err := keyring.Get(service, user)
+		if err == nil {
+			if len(secret) > 0 {
+				parts := strings.SplitN(secret, ":", 2)
+				if len(parts) == 2 {
+					return parts[0], parts[1], nil
+				}
 			}
 		}
 	}
-
-	// Not in keyring, prompt user
 	fmt.Print("Apple Music Username: ")
 	fmt.Scanln(&username)
 
 	fmt.Print("Apple Music Password: ")
-	// Use a simple approach for hidden input
 	password, err = readPassword()
 	if err != nil {
 		return "", "", err
 	}
-
-	// Store in keyring for next time
 	secretString := fmt.Sprintf("%s:%s", username, password)
 	err = keyring.Set(service, user, secretString)
 	if err != nil {
@@ -110,21 +107,14 @@ func getCredentials() (username, password string, err error) {
 
 	return username, password, nil
 }
-
-// readPassword reads a password from stdin without echoing
 func readPassword() (string, error) {
-	// Check if stdin is a terminal
 	if !term.IsTerminal(int(syscall.Stdin)) {
 		return "", errors.New("stdin is not a terminal")
 	}
-
-	// Read password without echoing
 	password, err := term.ReadPassword(int(syscall.Stdin))
 	if err != nil {
 		return "", err
 	}
-
-	// Add a newline after reading
 	fmt.Println()
 
 	return string(password), nil
@@ -806,7 +796,6 @@ func convertIfNeeded(track *task.Track) {
 			fmt.Println("Original removed.")
 		}
 	} else {
-		// Keep both but point track to new file (optional decision)
 		track.SavePath = outPath
 		track.SaveName = filepath.Base(outPath)
 	}
@@ -1834,105 +1823,7 @@ func writeMP4Tags(track *task.Track, lrc string) error {
 	return nil
 }
 
-func setupChroot(rootfsPath string) error {
-	if os.Geteuid() == 0 {
-		if err := syscall.Chroot(rootfsPath); err != nil {
-			return fmt.Errorf("chroot failed: %w", err)
-		}
-	} else {
-		if os.Getenv("IN_NAMESPACE") != "1" {
-			self, err := os.Executable()
-			if err != nil {
-				return fmt.Errorf("could not find own executable path: %w", err)
-			}
-			args := os.Args
-			cmd := exec.Command(self, args[1:]...)
-			cmd.Env = append(os.Environ(), "IN_NAMESPACE=1")
-			cmd.Stdin = os.Stdin
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			cmd.SysProcAttr = &syscall.SysProcAttr{
-				Cloneflags:  syscall.CLONE_NEWUSER,
-				UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-				GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
-			}
-
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("namespace command failed: %w", err)
-			}
-			// The parent process must exit after the child is done.
-			os.Exit(0)
-		}
-
-		fmt.Println("Inside namespace, attempting chroot.")
-		if err := syscall.Chroot(rootfsPath); err != nil {
-			return fmt.Errorf("chroot failed inside namespace: %w", err)
-		}
-	}
-
-	if err := os.Chdir("/"); err != nil {
-		return fmt.Errorf("chdir to / failed: %w", err)
-	}
-
-	return nil
-}
-
-func runAmWrapper(username, password string) (func(), error) {
-	// After chroot, the path is absolute from the new root.
-	wrapperPath := "/amwrapper"
-
-	wrapperCmd := exec.Command(wrapperPath)
-	wrapperCmd.Stdin = strings.NewReader(fmt.Sprintf("%s\n%s\n", username, password))
-	wrapperCmd.Stdout = os.Stdout
-	wrapperCmd.Stderr = os.Stderr
-
-	if err := wrapperCmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start amwrapper: %w", err)
-	}
-	cleanup := func() {
-		if wrapperCmd.Process != nil {
-			wrapperCmd.Process.Kill()
-		}
-	}
-	return cleanup, nil
-}
-
 func main() {
-	err := loadConfig()
-	if err != nil {
-		fmt.Printf("load Config failed: %v", err)
-		return
-	}
-
-	username, password, err := getCredentials()
-	if err != nil {
-		fmt.Printf("Failed to get credentials: %v\n", err)
-		return
-	}
-	rootfs, err := filepath.Abs("rootfs")
-	if err != nil {
-		log.Fatalf("Could not get absolute path for rootfs: %v", err)
-	}
-	if err := setupChroot(rootfs); err != nil {
-		log.Fatalf("Failed to set up chroot environment: %v", err)
-	}
-	cleanup, err := runAmWrapper(username, password)
-	if err != nil {
-		log.Fatalf("Failed to run amwrapper: %v", err)
-	}
-	defer cleanup()
-	time.Sleep(2 * time.Second)
-
-	token, err := ampapi.GetToken()
-	if err != nil {
-		if Config.AuthorizationToken != "" && Config.AuthorizationToken != "your-authorization-token" {
-			token = strings.Replace(Config.AuthorizationToken, "Bearer ", "", -1)
-		} else {
-			fmt.Println("Failed to get token.")
-			fmt.Println(err)
-			return
-		}
-	}
 	var search_type string
 	pflag.StringVar(&search_type, "search", "", "Search for 'album', 'song', or 'artist'. Provide query after flags.")
 	pflag.BoolVar(&dl_atmos, "atmos", false, "Enable atmos download mode")
@@ -1941,6 +1832,7 @@ func main() {
 	pflag.BoolVar(&dl_song, "song", false, "Enable single song download mode")
 	pflag.BoolVar(&artist_select, "all-album", false, "Download all artist albums")
 	pflag.BoolVar(&debug_mode, "debug", false, "Enable debug mode to show audio quality information")
+	pflag.BoolVar(&force_reauth, "force-reauth", false, "Force re-entry of Apple Music credentials (clears stored credentials)")
 	alac_max = pflag.Int("alac-max", Config.AlacMax, "Specify the max quality for download alac")
 	atmos_max = pflag.Int("atmos-max", Config.AtmosMax, "Specify the max quality for download atmos")
 	aac_type = pflag.String("aac-type", Config.AacType, "Select AAC type, aac aac-binaural aac-downmix")
@@ -1955,6 +1847,50 @@ func main() {
 	}
 
 	pflag.Parse()
+	if force_reauth {
+		err := loadConfig()
+		if err != nil {
+			fmt.Printf("load Config failed: %v", err)
+			return
+		}
+		var _, _, gerr = getCredentials()
+		if gerr != nil {
+			fmt.Println("Failed to get credentials:", err)
+			return
+		}
+		fmt.Println("credentials stored; restart without passing --force-reauth")
+		return
+	}
+
+	err := loadConfig()
+	if err != nil {
+		fmt.Printf("load Config failed: %v", err)
+		return
+	}
+	testSockets()
+
+	username, password, err := getCredentials()
+	if err != nil {
+		fmt.Println("Failed to get credentials:", err)
+		return
+	}
+	err = sendCredentialsViaSocket(username, password)
+	if err != nil {
+		fmt.Println("Failed to send credentials via socket:", err)
+		return
+	}
+
+	token, err := ampapi.GetToken()
+	if err != nil {
+		if Config.AuthorizationToken != "" && Config.AuthorizationToken != "your-authorization-token" {
+			token = strings.Replace(Config.AuthorizationToken, "Bearer ", "", -1)
+		} else {
+			fmt.Println("Failed to get token.")
+			fmt.Println(err)
+			return
+		}
+	}
+
 	Config.AlacMax = *alac_max
 	Config.AtmosMax = *atmos_max
 	Config.AacType = *aac_type
@@ -2313,7 +2249,7 @@ func checkM3u8(b string, f string) (string, error) {
 	var EnhancedHls string
 	if Config.GetM3u8FromDevice {
 		adamID := b
-		conn, err := net.Dial("unix", "./rootfs/proc/m3u8.sock")
+		conn, err := net.Dial("unix", "/socks/m3u8.sock")
 		if err != nil {
 			fmt.Println("Error connecting to device:", err)
 			return "none", err
@@ -2651,4 +2587,70 @@ func ripSong(songId string, token string, storefront string, mediaUserToken stri
 	}
 
 	return nil
+}
+
+func sendCredentialsViaSocket(username, password string) error {
+	socketPath := "./socks/decrypt.sock"
+	maxRetries := 30
+	for i := 0; i < maxRetries; i++ {
+		if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+			time.Sleep(time.Second)
+			continue
+		}
+		conn, err := net.Dial("unix", socketPath)
+		if err != nil {
+			fmt.Println(err)
+			time.Sleep(time.Second)
+			continue
+		}
+		defer conn.Close()
+		_, err = conn.Write([]byte(username + "\x00"))
+		if err != nil {
+			return fmt.Errorf("failed to send username: %v", err)
+		}
+		_, err = conn.Write([]byte(password + "\x00"))
+		if err != nil {
+			return fmt.Errorf("failed to send password: %v", err)
+		}
+
+		fmt.Println("Credentials sent via socket successfully")
+		return nil
+	}
+
+	return fmt.Errorf("timeout waiting for socket to be ready")
+}
+
+func testSockets() {
+	sockets := []string{"./socks/decrypt.sock"}
+
+	for _, socketPath := range sockets {
+		if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+			fmt.Println("One or more of the required Unix sockets do not exist,")
+			fmt.Println("These sockets are required to communicate with the decryption process.")
+			fmt.Println("------ ------")
+			fmt.Println("The easiest way to get the decryption process running is to use Docker.")
+			fmt.Println("# Run if you have not already. This requires a relog. If you do not run this, the following commands need to be prefixed with sudo if you do not have Docker Rootless setup.")
+			fmt.Printf("sudo usermod -aG docker %s", os.Getenv("USER"))
+			fmt.Println("docker build -t applemusicwrapper .")
+			fmt.Println("docker run -d --init --restart always --name applemusicdownloader -v ./socks:/socks applemusicwrapper")
+			fmt.Println("------ ------")
+			log.Panicf("cannot connect to socket %s", err)
+			continue
+		}
+		//conn, err := net.Dial("unix", socketPath)
+		//if err != nil {
+		//	fmt.Println("One or more of the required Unix sockets are not running,")
+		//	fmt.Println("These sockets are required to communicate with the decryption process.")
+		//	fmt.Println("------ ------")
+		//	fmt.Println("The easiest way to get the decryption process running is to use Docker.")
+		//	fmt.Println("# Run if you have not already. This requires a relog. If you do not run this, the following commands need to be prefixed with sudo if you do not have Docker Rootless setup.")
+		//	fmt.Printf("sudo usermod -aG docker %s\n", os.Getenv("USER"))
+		//	fmt.Println("docker build -t applemusicwrapper .")
+		//	fmt.Println("docker run -d --init --restart always --name applemusicdownloader -v ./socks:/socks applemusicwrapper")
+		//	fmt.Println("------ ------")
+		//	log.Panicf("cannot connect to socket %s", err)
+		//	continue
+		//}
+		//conn.Close()
+	}
 }
