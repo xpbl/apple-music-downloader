@@ -769,7 +769,7 @@ func ripTrack(track *task.Track, token string, mediaUserToken string) {
 	//mv dl dev
 	if track.Type == "music-videos" {
 		if len(mediaUserToken) <= 50 {
-			fmt.Println("meida-user-token is not set, skip MV dl")
+			fmt.Println("media-user-token is not set, skip MV dl")
 			counter.Success++
 			return
 		}
