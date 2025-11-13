@@ -8,3 +8,5 @@
 !README.md
 !utils/*
 !shell.nix
+!config.example.yaml
+config.yaml
